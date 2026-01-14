@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
-	"os/signal"
-	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -27,21 +25,12 @@ type program struct {
 
 func main() {
 	prg := &program{}
-	// SIGTERM handling is in Start()
-	if err := svc.Run(prg, syscall.SIGINT); err != nil {
+	if err := svc.Run(prg, syscall.SIGINT, syscall.SIGTERM); err != nil {
 		logFatal("%s", err)
 	}
 }
 
 func (p *program) Init(env svc.Environment) error {
-	if env.IsWindowsService() {
-		dir := filepath.Dir(os.Args[0])
-		return os.Chdir(dir)
-	}
-	return nil
-}
-
-func (p *program) Start() error {
 	opts := nsqd.NewOptions()
 
 	flagSet := nsqdFlagSet(opts)
@@ -65,6 +54,7 @@ func (p *program) Start() error {
 	cfg.Validate()
 
 	options.Resolve(opts, flagSet, cfg)
+	applyBackwardCompatibility(opts, flagSet)
 
 	nsqd, err := nsqd.New(opts)
 	if err != nil {
@@ -72,7 +62,11 @@ func (p *program) Start() error {
 	}
 	p.nsqd = nsqd
 
-	err = p.nsqd.LoadMetadata()
+	return nil
+}
+
+func (p *program) Start() error {
+	err := p.nsqd.LoadMetadata()
 	if err != nil {
 		logFatal("failed to load metadata - %s", err)
 	}
@@ -80,19 +74,6 @@ func (p *program) Start() error {
 	if err != nil {
 		logFatal("failed to persist metadata - %s", err)
 	}
-
-	signalChan := make(chan os.Signal, 1)
-	go func() {
-		// range over all term signals
-		// we don't want to un-register our sigterm handler which would
-		// cause default go behavior to apply
-		for range signalChan {
-			p.once.Do(func() {
-				p.nsqd.Exit()
-			})
-		}
-	}()
-	signal.Notify(signalChan, syscall.SIGTERM)
 
 	go func() {
 		err := p.nsqd.Main()
@@ -112,6 +93,10 @@ func (p *program) Stop() error {
 	return nil
 }
 
+func (p *program) Handle(s os.Signal) error {
+	return svc.ErrStop
+}
+
 // Context returns a context that will be canceled when nsqd initiates the shutdown
 func (p *program) Context() context.Context {
 	return p.nsqd.Context()
@@ -119,4 +104,14 @@ func (p *program) Context() context.Context {
 
 func logFatal(f string, args ...interface{}) {
 	lg.LogFatal("[nsqd] ", f, args...)
+}
+
+// applyBackwardCompatibility applies backward compatibility rules to options after flag resolution
+func applyBackwardCompatibility(opts *nsqd.Options, flagSet *flag.FlagSet) {
+	// when max-defer-timeout was not explicitly set, refer to the max-req-timeout value
+	if flag := flagSet.Lookup("max-defer-timeout"); flag != nil && flag.Value.String() == flag.DefValue {
+		opts.MaxDeferTimeout = opts.MaxReqTimeout
+	}
+
+	// ... other backward compatibility rules can be added here
 }

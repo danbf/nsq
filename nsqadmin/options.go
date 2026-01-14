@@ -14,6 +14,8 @@ type Options struct {
 	HTTPAddress string `flag:"http-address"`
 	BasePath    string `flag:"base-path"`
 
+	DevStaticDir string `flag:"dev-static-dir"`
+
 	GraphiteURL   string `flag:"graphite-url"`
 	ProxyGraphite bool   `flag:"proxy-graphite"`
 
@@ -38,7 +40,7 @@ type Options struct {
 
 	NotificationHTTPEndpoint string `flag:"notification-http-endpoint"`
 
-	AclHttpHeader string   `flag:"acl-http-header"`
+	ACLHTTPHeader string   `flag:"acl-http-header"`
 	AdminUsers    []string `flag:"admin-user" cfg:"admin_users"`
 }
 
@@ -55,7 +57,7 @@ func NewOptions() *Options {
 		HTTPClientConnectTimeout: 2 * time.Second,
 		HTTPClientRequestTimeout: 5 * time.Second,
 		AllowConfigFromCIDR:      "127.0.0.1/8",
-		AclHttpHeader:            "X-Forwarded-User",
+		ACLHTTPHeader:            "X-Forwarded-User",
 		AdminUsers:               []string{},
 	}
 }

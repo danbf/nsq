@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -71,7 +70,7 @@ func New(opts *Options) (*NSQAdmin, error) {
 	}
 	if opts.HTTPClientTLSRootCAFile != "" {
 		tlsCertPool := x509.NewCertPool()
-		caCertFile, err := ioutil.ReadFile(opts.HTTPClientTLSRootCAFile)
+		caCertFile, err := os.ReadFile(opts.HTTPClientTLSRootCAFile)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read TLS root CA file %s - %s",
 				opts.HTTPClientTLSRootCAFile, err)
@@ -100,7 +99,6 @@ func New(opts *Options) (*NSQAdmin, error) {
 		url, err := url.Parse(opts.GraphiteURL)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse --graphite-url (%s) - %s", opts.GraphiteURL, err)
-			os.Exit(1)
 		}
 		n.graphiteURL = url
 	}

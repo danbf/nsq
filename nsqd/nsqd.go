@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"math/rand"
 	"net"
@@ -58,11 +57,12 @@ type NSQD struct {
 
 	lookupPeers atomic.Value
 
-	tcpServer     *tcpServer
-	tcpListener   net.Listener
-	httpListener  net.Listener
-	httpsListener net.Listener
-	tlsConfig     *tls.Config
+	tcpServer       *tcpServer
+	tcpListener     net.Listener
+	httpListener    net.Listener
+	httpsListener   net.Listener
+	tlsConfig       *tls.Config
+	clientTLSConfig *tls.Config
 
 	poolSize int
 
@@ -129,6 +129,16 @@ func New(opts *Options) (*NSQD, error) {
 	}
 	n.tlsConfig = tlsConfig
 
+	clientTLSConfig, err := buildClientTLSConfig(opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build client TLS config - %s", err)
+	}
+	n.clientTLSConfig = clientTLSConfig
+
+	if opts.AuthHTTPRequestMethod != "post" && opts.AuthHTTPRequestMethod != "get" {
+		return nil, errors.New("--auth-http-request-method must be post or get")
+	}
+
 	for _, v := range opts.E2EProcessingLatencyPercentiles {
 		if v <= 0 || v > 1 {
 			return nil, fmt.Errorf("invalid E2E processing latency percentile: %v", v)
@@ -139,13 +149,15 @@ func New(opts *Options) (*NSQD, error) {
 	n.logf(LOG_INFO, "ID: %d", opts.ID)
 
 	n.tcpServer = &tcpServer{nsqd: n}
-	n.tcpListener, err = net.Listen("tcp", opts.TCPAddress)
+	n.tcpListener, err = net.Listen(util.TypeOfAddr(opts.TCPAddress), opts.TCPAddress)
 	if err != nil {
 		return nil, fmt.Errorf("listen (%s) failed - %s", opts.TCPAddress, err)
 	}
-	n.httpListener, err = net.Listen("tcp", opts.HTTPAddress)
-	if err != nil {
-		return nil, fmt.Errorf("listen (%s) failed - %s", opts.HTTPAddress, err)
+	if opts.HTTPAddress != "" {
+		n.httpListener, err = net.Listen(util.TypeOfAddr(opts.HTTPAddress), opts.HTTPAddress)
+		if err != nil {
+			return nil, fmt.Errorf("listen (%s) failed - %s", opts.HTTPAddress, err)
+		}
 	}
 	if n.tlsConfig != nil && opts.HTTPSAddress != "" {
 		n.httpsListener, err = tls.Listen("tcp", opts.HTTPSAddress, n.tlsConfig)
@@ -153,13 +165,18 @@ func New(opts *Options) (*NSQD, error) {
 			return nil, fmt.Errorf("listen (%s) failed - %s", opts.HTTPSAddress, err)
 		}
 	}
-
 	if opts.BroadcastHTTPPort == 0 {
-		opts.BroadcastHTTPPort = n.RealHTTPAddr().Port
+		tcpAddr, ok := n.RealHTTPAddr().(*net.TCPAddr)
+		if ok {
+			opts.BroadcastHTTPPort = tcpAddr.Port
+		}
 	}
 
 	if opts.BroadcastTCPPort == 0 {
-		opts.BroadcastTCPPort = n.RealTCPAddr().Port
+		tcpAddr, ok := n.RealTCPAddr().(*net.TCPAddr)
+		if ok {
+			opts.BroadcastTCPPort = tcpAddr.Port
+		}
 	}
 
 	if opts.StatsdPrefix != "" {
@@ -190,15 +207,25 @@ func (n *NSQD) triggerOptsNotification() {
 	}
 }
 
-func (n *NSQD) RealTCPAddr() *net.TCPAddr {
-	return n.tcpListener.Addr().(*net.TCPAddr)
+func (n *NSQD) RealTCPAddr() net.Addr {
+	if n.tcpListener == nil {
+		return &net.TCPAddr{}
+	}
+	return n.tcpListener.Addr()
+
 }
 
-func (n *NSQD) RealHTTPAddr() *net.TCPAddr {
-	return n.httpListener.Addr().(*net.TCPAddr)
+func (n *NSQD) RealHTTPAddr() net.Addr {
+	if n.httpListener == nil {
+		return &net.TCPAddr{}
+	}
+	return n.httpListener.Addr()
 }
 
 func (n *NSQD) RealHTTPSAddr() *net.TCPAddr {
+	if n.httpsListener == nil {
+		return &net.TCPAddr{}
+	}
 	return n.httpsListener.Addr().(*net.TCPAddr)
 }
 
@@ -242,12 +269,13 @@ func (n *NSQD) Main() error {
 	n.waitGroup.Wrap(func() {
 		exitFunc(protocol.TCPServer(n.tcpListener, n.tcpServer, n.logf))
 	})
-
-	httpServer := newHTTPServer(n, false, n.getOpts().TLSRequired == TLSRequired)
-	n.waitGroup.Wrap(func() {
-		exitFunc(http_api.Serve(n.httpListener, httpServer, "HTTP", n.logf))
-	})
-	if n.tlsConfig != nil && n.getOpts().HTTPSAddress != "" {
+	if n.httpListener != nil {
+		httpServer := newHTTPServer(n, false, n.getOpts().TLSRequired == TLSRequired)
+		n.waitGroup.Wrap(func() {
+			exitFunc(http_api.Serve(n.httpListener, httpServer, "HTTP", n.logf))
+		})
+	}
+	if n.httpsListener != nil {
 		httpsServer := newHTTPServer(n, true, true)
 		n.waitGroup.Wrap(func() {
 			exitFunc(http_api.Serve(n.httpsListener, httpsServer, "HTTPS", n.logf))
@@ -264,15 +292,23 @@ func (n *NSQD) Main() error {
 	return err
 }
 
-type meta struct {
-	Topics []struct {
-		Name     string `json:"name"`
-		Paused   bool   `json:"paused"`
-		Channels []struct {
-			Name   string `json:"name"`
-			Paused bool   `json:"paused"`
-		} `json:"channels"`
-	} `json:"topics"`
+// Metadata is the collection of persistent information about the current NSQD.
+type Metadata struct {
+	Topics  []TopicMetadata `json:"topics"`
+	Version string          `json:"version"`
+}
+
+// TopicMetadata is the collection of persistent information about a topic.
+type TopicMetadata struct {
+	Name     string            `json:"name"`
+	Paused   bool              `json:"paused"`
+	Channels []ChannelMetadata `json:"channels"`
+}
+
+// ChannelMetadata is the collection of persistent information about a channel.
+type ChannelMetadata struct {
+	Name   string `json:"name"`
+	Paused bool   `json:"paused"`
 }
 
 func newMetadataFile(opts *Options) string {
@@ -280,7 +316,7 @@ func newMetadataFile(opts *Options) string {
 }
 
 func readOrEmpty(fn string) ([]byte, error) {
-	data, err := ioutil.ReadFile(fn)
+	data, err := os.ReadFile(fn)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return nil, fmt.Errorf("failed to read metadata from %s - %s", fn, err)
@@ -317,7 +353,7 @@ func (n *NSQD) LoadMetadata() error {
 		return nil // fresh start
 	}
 
-	var m meta
+	var m Metadata
 	err = json.Unmarshal(data, &m)
 	if err != nil {
 		return fmt.Errorf("failed to parse metadata in %s - %s", fn, err)
@@ -347,46 +383,47 @@ func (n *NSQD) LoadMetadata() error {
 	return nil
 }
 
+// GetMetadata retrieves the current topic and channel set of the NSQ daemon. If
+// the ephemeral flag is set, ephemeral topics are also returned even though these
+// are not saved to disk.
+func (n *NSQD) GetMetadata(ephemeral bool) *Metadata {
+	meta := &Metadata{
+		Version: version.Binary,
+	}
+	for _, topic := range n.topicMap {
+		if topic.ephemeral && !ephemeral {
+			continue
+		}
+		topicData := TopicMetadata{
+			Name:   topic.name,
+			Paused: topic.IsPaused(),
+		}
+		topic.Lock()
+		for _, channel := range topic.channelMap {
+			if channel.ephemeral {
+				continue
+			}
+			topicData.Channels = append(topicData.Channels, ChannelMetadata{
+				Name:   channel.name,
+				Paused: channel.IsPaused(),
+			})
+		}
+		topic.Unlock()
+		meta.Topics = append(meta.Topics, topicData)
+	}
+	return meta
+}
+
 func (n *NSQD) PersistMetadata() error {
 	// persist metadata about what topics/channels we have, across restarts
 	fileName := newMetadataFile(n.getOpts())
 
 	n.logf(LOG_INFO, "NSQ: persisting topic/channel metadata to %s", fileName)
 
-	js := make(map[string]interface{})
-	topics := []interface{}{}
-	for _, topic := range n.topicMap {
-		if topic.ephemeral {
-			continue
-		}
-		topicData := make(map[string]interface{})
-		topicData["name"] = topic.name
-		topicData["paused"] = topic.IsPaused()
-		channels := []interface{}{}
-		topic.Lock()
-		for _, channel := range topic.channelMap {
-			if channel.ephemeral {
-				continue
-			}
-			channel.Lock()
-			channelData := make(map[string]interface{})
-			channelData["name"] = channel.name
-			channelData["paused"] = channel.IsPaused()
-			channel.Unlock()
-			channels = append(channels, channelData)
-		}
-		topic.Unlock()
-		topicData["channels"] = channels
-		topics = append(topics, topicData)
-	}
-	js["version"] = version.Binary
-	js["topics"] = topics
-
-	data, err := json.Marshal(&js)
+	data, err := json.Marshal(n.GetMetadata(false))
 	if err != nil {
 		return err
 	}
-
 	tmpFileName := fmt.Sprintf("%s.%d.tmp", fileName, rand.Int())
 
 	err = writeSyncFile(tmpFileName, data)
@@ -577,8 +614,7 @@ func (n *NSQD) channels() []*Channel {
 
 // resizePool adjusts the size of the pool of queueScanWorker goroutines
 //
-// 	1 <= pool <= min(num * 0.25, QueueScanWorkerPoolMax)
-//
+//	1 <= pool <= min(num * 0.25, QueueScanWorkerPoolMax)
 func (n *NSQD) resizePool(num int, workCh chan *Channel, responseCh chan bool, closeCh chan int) {
 	idealPoolSize := int(float64(num) * 0.25)
 	if idealPoolSize < 1 {
@@ -717,12 +753,11 @@ func buildTLSConfig(opts *Options) (*tls.Config, error) {
 		Certificates: []tls.Certificate{cert},
 		ClientAuth:   tlsClientAuthPolicy,
 		MinVersion:   opts.TLSMinVersion,
-		MaxVersion:   tls.VersionTLS12, // enable TLS_FALLBACK_SCSV prior to Go 1.5: https://go-review.googlesource.com/#/c/1776/
 	}
 
 	if opts.TLSRootCAFile != "" {
 		tlsCertPool := x509.NewCertPool()
-		caCertFile, err := ioutil.ReadFile(opts.TLSRootCAFile)
+		caCertFile, err := os.ReadFile(opts.TLSRootCAFile)
 		if err != nil {
 			return nil, err
 		}
@@ -732,7 +767,25 @@ func buildTLSConfig(opts *Options) (*tls.Config, error) {
 		tlsConfig.ClientCAs = tlsCertPool
 	}
 
-	tlsConfig.BuildNameToCertificate()
+	return tlsConfig, nil
+}
+
+func buildClientTLSConfig(opts *Options) (*tls.Config, error) {
+	tlsConfig := &tls.Config{
+		MinVersion: opts.TLSMinVersion,
+	}
+
+	if opts.TLSRootCAFile != "" {
+		tlsCertPool := x509.NewCertPool()
+		caCertFile, err := os.ReadFile(opts.TLSRootCAFile)
+		if err != nil {
+			return nil, err
+		}
+		if !tlsCertPool.AppendCertsFromPEM(caCertFile) {
+			return nil, errors.New("failed to append certificate to pool")
+		}
+		tlsConfig.RootCAs = tlsCertPool
+	}
 
 	return tlsConfig, nil
 }

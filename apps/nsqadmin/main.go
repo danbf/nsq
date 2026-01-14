@@ -30,6 +30,7 @@ func nsqadminFlagSet(opts *nsqadmin.Options) *flag.FlagSet {
 
 	flagSet.String("http-address", opts.HTTPAddress, "<addr>:<port> to listen on for HTTP clients")
 	flagSet.String("base-path", opts.BasePath, "URL base path")
+	flagSet.String("dev-static-dir", opts.DevStaticDir, "(development use only)")
 
 	flagSet.String("graphite-url", opts.GraphiteURL, "graphite HTTP address")
 	flagSet.Bool("proxy-graphite", false, "proxy HTTP requests to graphite")
@@ -50,7 +51,7 @@ func nsqadminFlagSet(opts *nsqadmin.Options) *flag.FlagSet {
 	flagSet.String("http-client-tls-key", "", "path to key file for the HTTP client")
 
 	flagSet.String("allow-config-from-cidr", opts.AllowConfigFromCIDR, "A CIDR from which to allow HTTP requests to the /config endpoint")
-	flagSet.String("acl-http-header", opts.AclHttpHeader, "HTTP header to check for authenticated admin users")
+	flagSet.String("acl-http-header", opts.ACLHTTPHeader, "HTTP header to check for authenticated admin users")
 
 	nsqlookupdHTTPAddresses := app.StringArray{}
 	flagSet.Var(&nsqlookupdHTTPAddresses, "lookupd-http-address", "lookupd HTTP address (may be given multiple times)")

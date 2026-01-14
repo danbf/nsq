@@ -39,28 +39,38 @@ func (t *tlsRequiredOption) IsBoolFlag() bool { return true }
 
 type tlsMinVersionOption uint16
 
+var tlsVersionTable = []struct {
+	val uint16
+	str string
+}{
+	{tls.VersionTLS10, "tls1.0"},
+	{tls.VersionTLS11, "tls1.1"},
+	{tls.VersionTLS12, "tls1.2"},
+	{tls.VersionTLS13, "tls1.3"},
+}
+
 func (t *tlsMinVersionOption) Set(s string) error {
 	s = strings.ToLower(s)
-	switch s {
-	case "":
+	if s == "" {
 		return nil
-	case "ssl3.0":
-		*t = tls.VersionSSL30
-	case "tls1.0":
-		*t = tls.VersionTLS10
-	case "tls1.1":
-		*t = tls.VersionTLS11
-	case "tls1.2":
-		*t = tls.VersionTLS12
-	default:
-		return fmt.Errorf("unknown tlsVersionOption %q", s)
 	}
-	return nil
+	for _, v := range tlsVersionTable {
+		if s == v.str {
+			*t = tlsMinVersionOption(v.val)
+			return nil
+		}
+	}
+	return fmt.Errorf("unknown tlsVersionOption %q", s)
 }
 
 func (t *tlsMinVersionOption) Get() interface{} { return uint16(*t) }
 
 func (t *tlsMinVersionOption) String() string {
+	for _, v := range tlsVersionTable {
+		if uint16(*t) == v.val {
+			return v.str
+		}
+	}
 	return strconv.FormatInt(int64(*t), 10)
 }
 
@@ -119,10 +129,12 @@ func nsqdFlagSet(opts *nsqd.Options) *flag.FlagSet {
 	flagSet.Bool("worker-id", false, "[deprecated] use --node-id")
 
 	flagSet.String("https-address", opts.HTTPSAddress, "<addr>:<port> to listen on for HTTPS clients")
-	flagSet.String("http-address", opts.HTTPAddress, "<addr>:<port> to listen on for HTTP clients")
-	flagSet.String("tcp-address", opts.TCPAddress, "<addr>:<port> to listen on for TCP clients")
+	flagSet.String("http-address", opts.HTTPAddress, "address to listen on for HTTP clients (<addr>:<port> for TCP/IP or <path> for unix socket)")
+	flagSet.String("tcp-address", opts.TCPAddress, "address to listen on for TCP clients (<addr>:<port> for TCP/IP or <path> for unix socket)")
+
 	authHTTPAddresses := app.StringArray{}
 	flagSet.Var(&authHTTPAddresses, "auth-http-address", "<addr>:<port> or a full url to query auth server (may be given multiple times)")
+	flagSet.String("auth-http-request-method", opts.AuthHTTPRequestMethod, "HTTP method to use for auth server requests")
 	flagSet.String("broadcast-address", opts.BroadcastAddress, "address that will be registered with lookupd (defaults to the OS hostname)")
 	flagSet.Int("broadcast-tcp-port", opts.BroadcastTCPPort, "TCP port that will be registered with lookupd (defaults to the TCP port that this nsqd is listening on)")
 	flagSet.Int("broadcast-http-port", opts.BroadcastHTTPPort, "HTTP port that will be registered with lookupd (defaults to the HTTP port that this nsqd is listening on)")
@@ -130,6 +142,8 @@ func nsqdFlagSet(opts *nsqd.Options) *flag.FlagSet {
 	flagSet.Var(&lookupdTCPAddrs, "lookupd-tcp-address", "lookupd TCP address (may be given multiple times)")
 	flagSet.Duration("http-client-connect-timeout", opts.HTTPClientConnectTimeout, "timeout for HTTP connect")
 	flagSet.Duration("http-client-request-timeout", opts.HTTPClientRequestTimeout, "timeout for HTTP request")
+	flagSet.String("topology-region", opts.TopologyRegion, "A region represents a larger domain, made up of one or more zones for preferring closer consumer")
+	flagSet.String("topology-zone", opts.TopologyZone, "A zone represents a logical failure domain for preferring closer consumer")
 
 	// diskqueue options
 	flagSet.String("data-path", opts.DataPath, "path to store disk-backed messages")
@@ -147,6 +161,7 @@ func nsqdFlagSet(opts *nsqd.Options) *flag.FlagSet {
 	flagSet.Int64("max-msg-size", opts.MaxMsgSize, "maximum size of a single message in bytes")
 	flagSet.Duration("max-req-timeout", opts.MaxReqTimeout, "maximum requeuing timeout for a message")
 	flagSet.Int64("max-body-size", opts.MaxBodySize, "maximum size of a single command body")
+	flagSet.Duration("max-defer-timeout", opts.MaxDeferTimeout, "maximum duration when deferring a message")
 
 	// client overridable configuration options
 	flagSet.Duration("max-heartbeat-interval", opts.MaxHeartbeatInterval, "maximum client configurable duration of time between client heartbeats")
@@ -178,12 +193,19 @@ func nsqdFlagSet(opts *nsqd.Options) *flag.FlagSet {
 	tlsRequired := tlsRequiredOption(opts.TLSRequired)
 	tlsMinVersion := tlsMinVersionOption(opts.TLSMinVersion)
 	flagSet.Var(&tlsRequired, "tls-required", "require TLS for client connections (true, false, tcp-https)")
-	flagSet.Var(&tlsMinVersion, "tls-min-version", "minimum SSL/TLS version acceptable ('ssl3.0', 'tls1.0', 'tls1.1', or 'tls1.2')")
+	flagSet.Var(&tlsMinVersion, "tls-min-version", "minimum SSL/TLS version acceptable ('ssl3.0', 'tls1.0', 'tls1.1', 'tls1.2' or 'tls1.3')")
 
 	// compression
 	flagSet.Bool("deflate", opts.DeflateEnabled, "enable deflate feature negotiation (client compression)")
 	flagSet.Int("max-deflate-level", opts.MaxDeflateLevel, "max deflate compression level a client can negotiate (> values == > nsqd CPU usage)")
 	flagSet.Bool("snappy", opts.SnappyEnabled, "enable snappy feature negotiation (client compression)")
+
+	experiments := app.StringArray{}
+	var validExperiments []string
+	for _, e := range nsqd.AllExperiments {
+		validExperiments = append(validExperiments, fmt.Sprintf("%q", string(e)))
+	}
+	flagSet.Var(&experiments, "enable-experiment", fmt.Sprintf("enable experimental feature (may be given multiple times) (valid options: %s)", strings.Join(validExperiments, ", ")))
 
 	return flagSet
 }

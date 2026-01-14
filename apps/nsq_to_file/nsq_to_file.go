@@ -18,16 +18,6 @@ import (
 	"github.com/nsqio/nsq/internal/version"
 )
 
-func hasArg(s string) bool {
-	argExist := false
-	flag.Visit(func(f *flag.Flag) {
-		if f.Name == s {
-			argExist = true
-		}
-	})
-	return argExist
-}
-
 func flagSet() *flag.FlagSet {
 	fs := flag.NewFlagSet("nsqd", flag.ExitOnError)
 
@@ -136,8 +126,8 @@ func main() {
 	cfg.UserAgent = fmt.Sprintf("nsq_to_file/%s go-nsq/%s", version.Binary, nsq.VERSION)
 	cfg.MaxInFlight = opts.MaxInFlight
 
-	hupChan := make(chan os.Signal)
-	termChan := make(chan os.Signal)
+	hupChan := make(chan os.Signal, 1)
+	termChan := make(chan os.Signal, 1)
 	signal.Notify(hupChan, syscall.SIGHUP)
 	signal.Notify(termChan, syscall.SIGINT, syscall.SIGTERM)
 

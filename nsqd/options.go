@@ -27,8 +27,11 @@ type Options struct {
 	BroadcastHTTPPort        int           `flag:"broadcast-http-port"`
 	NSQLookupdTCPAddresses   []string      `flag:"lookupd-tcp-address" cfg:"nsqlookupd_tcp_addresses"`
 	AuthHTTPAddresses        []string      `flag:"auth-http-address" cfg:"auth_http_addresses"`
+	AuthHTTPRequestMethod    string        `flag:"auth-http-request-method" cfg:"auth_http_request_method"`
 	HTTPClientConnectTimeout time.Duration `flag:"http-client-connect-timeout" cfg:"http_client_connect_timeout"`
 	HTTPClientRequestTimeout time.Duration `flag:"http-client-request-timeout" cfg:"http_client_request_timeout"`
+	TopologyRegion           string        `flag:"topology-region"`
+	TopologyZone             string        `flag:"topology-zone"`
 
 	// diskqueue options
 	DataPath        string        `flag:"data-path"`
@@ -44,12 +47,13 @@ type Options struct {
 	QueueScanDirtyPercent    float64
 
 	// msg and command options
-	MsgTimeout    time.Duration `flag:"msg-timeout"`
-	MaxMsgTimeout time.Duration `flag:"max-msg-timeout"`
-	MaxMsgSize    int64         `flag:"max-msg-size"`
-	MaxBodySize   int64         `flag:"max-body-size"`
-	MaxReqTimeout time.Duration `flag:"max-req-timeout"`
-	ClientTimeout time.Duration
+	MsgTimeout      time.Duration `flag:"msg-timeout"`
+	MaxMsgTimeout   time.Duration `flag:"max-msg-timeout"`
+	MaxMsgSize      int64         `flag:"max-msg-size"`
+	MaxBodySize     int64         `flag:"max-body-size"`
+	MaxReqTimeout   time.Duration `flag:"max-req-timeout"`
+	ClientTimeout   time.Duration
+	MaxDeferTimeout time.Duration `flag:"max-defer-timeout"`
 
 	// client overridable configuration options
 	MaxHeartbeatInterval   time.Duration `flag:"max-heartbeat-interval"`
@@ -84,6 +88,28 @@ type Options struct {
 	DeflateEnabled  bool `flag:"deflate"`
 	MaxDeflateLevel int  `flag:"max-deflate-level"`
 	SnappyEnabled   bool `flag:"snappy"`
+
+	// experimental features
+	Experiments []string `flag:"enable-experiment" cfg:"enable_experiment"`
+}
+
+type Experiment string
+
+const (
+	TopologyAwareConsumption Experiment = "topology-aware-consumption"
+)
+
+var AllExperiments = []Experiment{
+	TopologyAwareConsumption,
+}
+
+func (o Options) HasExperiment(e Experiment) bool {
+	for _, v := range o.Experiments {
+		if string(e) == v {
+			return true
+		}
+	}
+	return false
 }
 
 func NewOptions() *Options {
@@ -110,6 +136,7 @@ func NewOptions() *Options {
 
 		NSQLookupdTCPAddresses: make([]string, 0),
 		AuthHTTPAddresses:      make([]string, 0),
+		AuthHTTPRequestMethod:  "get",
 
 		HTTPClientConnectTimeout: 2 * time.Second,
 		HTTPClientRequestTimeout: 5 * time.Second,
@@ -125,12 +152,13 @@ func NewOptions() *Options {
 		QueueScanWorkerPoolMax:   4,
 		QueueScanDirtyPercent:    0.25,
 
-		MsgTimeout:    60 * time.Second,
-		MaxMsgTimeout: 15 * time.Minute,
-		MaxMsgSize:    1024 * 1024,
-		MaxBodySize:   5 * 1024 * 1024,
-		MaxReqTimeout: 1 * time.Hour,
-		ClientTimeout: 60 * time.Second,
+		MsgTimeout:      60 * time.Second,
+		MaxMsgTimeout:   15 * time.Minute,
+		MaxMsgSize:      1024 * 1024,
+		MaxBodySize:     5 * 1024 * 1024,
+		MaxReqTimeout:   1 * time.Hour,
+		ClientTimeout:   60 * time.Second,
+		MaxDeferTimeout: 1 * time.Hour,
 
 		MaxHeartbeatInterval:   60 * time.Second,
 		MaxRdyCount:            2500,
